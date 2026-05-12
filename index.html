@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Aura Productivity Tracker</title>
+
+  <style>
+    body{
+      background:#0f0d18;
+      color:white;
+      font-family:Arial;
+      padding:20px;
+    }
+
+    .box{
+      background:#1c1630;
+      padding:20px;
+      border-radius:15px;
+      margin-top:20px;
+    }
+
+    input{
+      padding:10px;
+      border:none;
+      border-radius:10px;
+      width:70%;
+    }
+
+    button{
+      padding:10px;
+      border:none;
+      border-radius:10px;
+      background:#8a70c8;
+      color:white;
+      margin-left:10px;
+    }
+
+    li{
+      margin-top:10px;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>✨ Aura Productivity Tracker</h1>
+
+<div class="box">
+
+  <input id="taskInput" placeholder="Enter task">
+
+  <button onclick="addTask()">
+    Add
+  </button>
+
+  <ul id="taskList"></ul>
+
+</div>
+
+<script>
+
+function addTask(){
+
+  let input =
+    document.getElementById("taskInput");
+
+  if(input.value==="") return;
+
+  let li =
+    document.createElement("li");
+
+  li.innerText=input.value;
+
+  document.getElementById("taskList")
+    .appendChild(li);
+
+  input.value="";
+}
+
+</script>
+
+</body>
+</html>
