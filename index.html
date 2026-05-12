@@ -75,6 +75,727 @@ function addTask(){
 
   input.value="";
 }
+  import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const STORAGE_KEY = "aura_tasks_v2";
+const META_KEY    = "aura_meta_v2";
+
+const PRIORITIES = {
+  low:    { label: "Low",    color: "#6b7fa8", xp: 10, dot: "#6b7fa8" },
+  medium: { label: "Medium", color: "#c8b8e8", xp: 20, dot: "#c8b8e8" },
+  high:   { label: "High",   color: "#f0c080", xp: 35, dot: "#f0c080" },
+};
+
+const LEVEL_THRESHOLDS = [0,50,120,220,360,550,800,1100,1500,2000];
+const LEVEL_TITLES = ["Novice","Apprentice","Focused","Steady","Driven","Skilled","Expert","Master","Elite","Legend"];
+
+const ACHIEVEMENTS = [
+  { id:"first",   icon:"🌱", title:"First Step",    desc:"Complete your first task",       check: (m)=> m.totalDone >= 1 },
+  { id:"five",    icon:"🔥", title:"On Fire",        desc:"Complete 5 tasks",               check: (m)=> m.totalDone >= 5 },
+  { id:"ten",     icon:"⚡", title:"Momentum",       desc:"Complete 10 tasks",              check: (m)=> m.totalDone >= 10 },
+  { id:"streak3", icon:"🌊", title:"Flow State",     desc:"3-day streak",                   check: (m)=> m.streak >= 3 },
+  { id:"streak7", icon:"💫", title:"Week Warrior",   desc:"7-day streak",                   check: (m)=> m.streak >= 7 },
+  { id:"xp100",   icon:"✨", title:"XP Hunter",      desc:"Earn 100 XP",                    check: (m)=> m.totalXP >= 100 },
+  { id:"xp500",   icon:"🌟", title:"XP Veteran",     desc:"Earn 500 XP",                    check: (m)=> m.totalXP >= 500 },
+  { id:"high3",   icon:"🎯", title:"High Achiever",  desc:"Complete 3 high-priority tasks", check: (m)=> m.highDone >= 3 },
+  { id:"perfect", icon:"👑", title:"Perfect Day",    desc:"Complete 5+ tasks in one day",   check: (m)=> m.bestDay >= 5 },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const dateKey = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
+const todayKey = () => dateKey();
+
+function loadData(key, fallback) {
+  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
+  catch { return fallback; }
+}
+const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+
+function getLevelInfo(xp) {
+  let level = 0;
+  for (let i = LEVEL_THRESHOLDS.length - 1; i >= 0; i--) {
+    if (xp >= LEVEL_THRESHOLDS[i]) { level = i; break; }
+  }
+  const current = LEVEL_THRESHOLDS[level];
+  const next    = LEVEL_THRESHOLDS[Math.min(level + 1, LEVEL_THRESHOLDS.length - 1)];
+  const pct     = level >= LEVEL_THRESHOLDS.length - 1 ? 100 : Math.round(((xp - current) / (next - current)) * 100);
+  return { level, title: LEVEL_TITLES[level], pct, current, next, xpToNext: next - xp };
+}
+
+function getDailyStats(tasks) {
+  const map = {};
+  tasks.forEach(t => {
+    if (t.done && t.completedAt) {
+      const k = dateKey(new Date(t.completedAt));
+      if (!map[k]) map[k] = { done: 0, xp: 0 };
+      map[k].done++;
+      map[k].xp += (PRIORITIES[t.priority]?.xp || 20);
+    }
+  });
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const k = dateKey(d);
+    const lbl = i === 0 ? "Today" : i === 1 ? "Yest" : d.toLocaleDateString("en-US",{weekday:"short"});
+    days.push({ key: k, label: lbl, ...(map[k] || { done: 0, xp: 0 }) });
+  }
+  return days;
+}
+
+function calcStreak(tasks) {
+  const doneMap = {};
+  tasks.forEach(t => {
+    if (t.done && t.completedAt) doneMap[dateKey(new Date(t.completedAt))] = true;
+  });
+  let streak = 0;
+  const today = new Date();
+  // allow today or yesterday to still count (generous streak)
+  for (let i = 0; i <= 365; i++) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    if (doneMap[dateKey(d)]) streak++;
+    else if (i > 0) break; // gap breaks streak (but skip today if not done yet)
+  }
+  return streak;
+}
+
+function getProductivityRating(done) {
+  if (done === 0) return { label:"Rest",    emoji:"🌙", color:"#5a4f7a", grade:"—"  };
+  if (done === 1) return { label:"Warming Up", emoji:"🌿", color:"#7abfa0", grade:"C" };
+  if (done === 2) return { label:"On Track",   emoji:"✦",  color:"#a89fd8", grade:"B" };
+  if (done <= 4)  return { label:"Crushing It",emoji:"⚡", color:"#c8b8e8", grade:"A" };
+                  return { label:"Legend Mode",emoji:"🌟", color:"#f0c870", grade:"S" };
+}
+
+// ─── XP Toast ─────────────────────────────────────────────────────────────────
+function XPToast({ xp, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 1800); return () => clearTimeout(t); }, []);
+  return (
+    <div style={{
+      position:"fixed", bottom:32, left:"50%", transform:"translateX(-50%)",
+      background:"rgba(28,22,44,0.95)", border:"1px solid rgba(200,180,255,0.3)",
+      borderRadius:99, padding:"10px 20px", display:"flex", alignItems:"center", gap:8,
+      boxShadow:"0 8px 32px rgba(0,0,0,0.5), 0 0 20px rgba(180,160,220,0.15)",
+      zIndex:1000, animation:"toastIn 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+      fontFamily:"'Outfit',sans-serif",
+    }}>
+      <span style={{fontSize:16}}>✨</span>
+      <span style={{color:"#c8b8e8", fontSize:14, fontWeight:600}}>+{xp} XP</span>
+    </div>
+  );
+}
+
+// ─── Achievement Toast ────────────────────────────────────────────────────────
+function AchievementToast({ achievement, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2600); return () => clearTimeout(t); }, []);
+  return (
+    <div style={{
+      position:"fixed", top:24, left:"50%", transform:"translateX(-50%)",
+      background:"linear-gradient(135deg, rgba(35,28,55,0.98), rgba(28,22,44,0.98))",
+      border:"1px solid rgba(240,200,112,0.4)",
+      borderRadius:16, padding:"14px 20px", display:"flex", alignItems:"center", gap:12,
+      boxShadow:"0 12px 40px rgba(0,0,0,0.6), 0 0 30px rgba(240,200,112,0.1)",
+      zIndex:1001, animation:"toastIn 0.4s cubic-bezier(0.34,1.56,0.64,1)",
+      fontFamily:"'Outfit',sans-serif", minWidth:240,
+    }}>
+      <span style={{fontSize:28}}>{achievement.icon}</span>
+      <div>
+        <div style={{color:"#f0c870", fontSize:11, letterSpacing:"0.1em", textTransform:"uppercase", fontWeight:700}}>Achievement Unlocked</div>
+        <div style={{color:"#e8e0f4", fontSize:14, fontWeight:600, marginTop:2}}>{achievement.title}</div>
+        <div style={{color:"#7a6a9a", fontSize:12}}>{achievement.desc}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Priority Picker ──────────────────────────────────────────────────────────
+function PriorityPicker({ value, onChange }) {
+  return (
+    <div style={{display:"flex", gap:4}}>
+      {Object.entries(PRIORITIES).map(([k, p]) => (
+        <button key={k} onClick={() => onChange(k)} style={{
+          padding:"4px 10px", borderRadius:6, border:`1px solid ${value===k ? p.color+"88" : "rgba(180,160,220,0.12)"}`,
+          background: value===k ? p.color+"22" : "transparent",
+          color: value===k ? p.color : "#5a4f7a", fontSize:11, fontFamily:"'Outfit',sans-serif",
+          letterSpacing:"0.04em", transition:"all 0.18s",
+        }}>{p.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Task Item ────────────────────────────────────────────────────────────────
+function TaskItem({ task, onToggle, onDelete, isNew }) {
+  const [hovered, setHovered] = useState(false);
+  const [justDone, setJustDone] = useState(false);
+  const p = PRIORITIES[task.priority] || PRIORITIES.medium;
+
+  const handleToggle = () => {
+    if (!task.done) setJustDone(true);
+    setTimeout(() => setJustDone(false), 600);
+    onToggle(task.id);
+  };
+
+  return (
+    <li
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display:"flex", alignItems:"center", gap:12,
+        padding:"13px 14px 13px 16px",
+        background: hovered && !task.done ? "rgba(180,160,220,0.06)" : task.done ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.03)",
+        border:`1px solid ${hovered && !task.done ? "rgba(180,160,220,0.2)" : task.done ? "rgba(180,160,220,0.05)" : "rgba(180,160,220,0.09)"}`,
+        borderLeft: task.done ? `3px solid rgba(180,160,220,0.1)` : `3px solid ${p.color}55`,
+        borderRadius:12, transition:"all 0.22s ease",
+        animation: isNew ? "slideIn 0.35s cubic-bezier(0.34,1.3,0.64,1)" : "none",
+      }}
+    >
+      {/* Checkbox */}
+      <button onClick={handleToggle} style={{
+        width:22, height:22, flexShrink:0, borderRadius:6,
+        border: task.done ? "none" : `1.5px solid ${p.color}66`,
+        background: task.done ? p.color : justDone ? p.color+"44" : "transparent",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        transition:"all 0.2s", transform: justDone ? "scale(1.2)" : "scale(1)",
+        boxShadow: task.done ? `0 0 10px ${p.color}44` : "none",
+      }}>
+        {task.done && (
+          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+            <path d="M1 4L3.5 6.5L9 1" stroke="#13101e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        )}
+      </button>
+
+      {/* Content */}
+      <div style={{flex:1, minWidth:0}}>
+        <span style={{
+          fontSize:14, lineHeight:1.45,
+          color: task.done ? "#4a3f6a" : "#ddd6f0",
+          textDecoration: task.done ? "line-through" : "none",
+          textDecorationColor:"rgba(180,160,220,0.25)",
+          display:"block", wordBreak:"break-word",
+          transition:"color 0.2s",
+        }}>{task.text}</span>
+        <div style={{display:"flex", alignItems:"center", gap:8, marginTop:3}}>
+          <span style={{
+            fontSize:10, color: task.done ? "#3a3050" : p.color+"bb",
+            letterSpacing:"0.06em", fontWeight:600, textTransform:"uppercase",
+          }}>{p.label}</span>
+          <span style={{color:"#2e2840", fontSize:10}}>·</span>
+          <span style={{fontSize:10, color:"#3a3050"}}>+{p.xp} XP</span>
+        </div>
+      </div>
+
+      {/* Delete */}
+      <button onClick={() => onDelete(task.id)} style={{
+        width:26, height:26, flexShrink:0, background:"transparent",
+        border:"none", borderRadius:6, color: hovered ? "#e89898" : "#2e2840",
+        fontSize:17, display:"flex", alignItems:"center", justifyContent:"center",
+        transition:"all 0.18s", opacity: hovered ? 1 : 0,
+      }}>×</button>
+    </li>
+  );
+}
+
+// ─── Tasks Page ───────────────────────────────────────────────────────────────
+function TasksPage({ tasks, setTasks, meta, setMeta, onXP, onAchievement }) {
+  const [input, setInput]     = useState("");
+  const [priority, setPriority] = useState("medium");
+  const [filter, setFilter]   = useState("all");
+  const [newId, setNewId]     = useState(null);
+  const inputRef = useRef(null);
+
+  const todayDone = tasks.filter(t => {
+    if (!t.done || !t.completedAt) return false;
+    return dateKey(new Date(t.completedAt)) === todayKey();
+  }).length;
+  const rating = getProductivityRating(todayDone);
+  const totalTasks = tasks.length;
+  const doneCount  = tasks.filter(t => t.done).length;
+  const completionPct = totalTasks > 0 ? Math.round((doneCount / totalTasks) * 100) : 0;
+
+  const addTask = () => {
+    const text = input.trim();
+    if (!text) return;
+    const id = Date.now();
+    setTasks(prev => [{ id, text, done:false, priority, createdAt:id, completedAt:null }, ...prev]);
+    setNewId(id);
+    setTimeout(() => setNewId(null), 400);
+    setInput("");
+    inputRef.current?.focus();
+  };
+
+  const toggleTask = useCallback((id) => {
+    setTasks(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      const nowDone = !t.done;
+      if (nowDone) {
+        const xp = PRIORITIES[t.priority]?.xp || 20;
+        const newMeta = {
+          ...meta,
+          totalXP: meta.totalXP + xp,
+          totalDone: meta.totalDone + 1,
+          highDone: t.priority === "high" ? meta.highDone + 1 : meta.highDone,
+        };
+        // check best day
+        const todayCount = prev.filter(tt => tt.done && tt.completedAt && dateKey(new Date(tt.completedAt)) === todayKey()).length + 1;
+        if (todayCount > newMeta.bestDay) newMeta.bestDay = todayCount;
+        onXP(xp, newMeta);
+      }
+      return { ...t, done: nowDone, completedAt: nowDone ? Date.now() : null };
+    }));
+  }, [meta, onXP]);
+
+  const deleteTask = (id) => {
+    setTasks(prev => prev.filter(t => t.id !== id));
+  };
+
+  const clearDone = () => setTasks(prev => prev.filter(t => !t.done));
+
+  const filtered = tasks.filter(t =>
+    filter === "active" ? !t.done : filter === "done" ? t.done : true
+  );
+
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:16}}>
+
+      {/* Daily status bar */}
+      <div style={{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"12px 16px", borderRadius:12,
+        background:`linear-gradient(135deg, ${rating.color}14, ${rating.color}08)`,
+        border:`1px solid ${rating.color}33`,
+      }}>
+        <div style={{display:"flex", alignItems:"center", gap:10}}>
+          <span style={{fontSize:20}}>{rating.emoji}</span>
+          <div>
+            <div style={{color:rating.color, fontSize:13, fontWeight:600, letterSpacing:"0.02em"}}>{rating.label}</div>
+            <div style={{color:"#5a4f7a", fontSize:11, marginTop:1}}>{todayDone} tasks done today</div>
+          </div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{color:"#c8b8e8", fontSize:20, fontWeight:700, fontFamily:"'Outfit',sans-serif", lineHeight:1}}>{completionPct}%</div>
+          <div style={{color:"#5a4f7a", fontSize:10, marginTop:1}}>overall</div>
+        </div>
+      </div>
+
+      {/* Overall progress bar */}
+      {totalTasks > 0 && (
+        <div style={{height:3, borderRadius:99, background:"rgba(180,160,220,0.08)", overflow:"hidden", marginTop:-8}}>
+          <div style={{
+            height:"100%", borderRadius:99,
+            width:`${completionPct}%`,
+            background:"linear-gradient(90deg, #8a70c8, #c8b8e8)",
+            transition:"width 0.6s cubic-bezier(0.34,1.2,0.64,1)",
+            boxShadow:"0 0 8px rgba(180,160,220,0.4)",
+          }}/>
+        </div>
+      )}
+
+      {/* Add task input */}
+      <div style={{
+        background:"rgba(255,255,255,0.03)", border:"1px solid rgba(180,160,220,0.14)",
+        borderRadius:14, padding:"14px 16px", display:"flex", flexDirection:"column", gap:10,
+      }}>
+        <div style={{display:"flex", gap:10}}>
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&addTask()}
+            placeholder="Add a task..."
+            style={{
+              flex:1, background:"transparent", border:"none", outline:"none",
+              color:"#e8e0f4", fontSize:14, fontFamily:"'Outfit',sans-serif",
+              letterSpacing:"0.01em",
+            }}
+          />
+          <button onClick={addTask} style={{
+            width:34, height:34, flexShrink:0, borderRadius:9,
+            background:"linear-gradient(135deg, #8a70c8, #c8b8e8)",
+            border:"none", color:"#13101e", fontSize:20, fontWeight:700,
+            display:"flex", alignItems:"center", justifyContent:"center",
+            boxShadow:"0 4px 12px rgba(140,112,200,0.35)",
+            transition:"transform 0.15s, box-shadow 0.15s",
+          }}>+</button>
+        </div>
+        <PriorityPicker value={priority} onChange={setPriority} />
+      </div>
+
+      {/* Filter pills */}
+      {tasks.length > 0 && (
+        <div style={{display:"flex", gap:6}}>
+          {[
+            {k:"all",    label:`All (${tasks.length})`},
+            {k:"active", label:`Active (${tasks.filter(t=>!t.done).length})`},
+            {k:"done",   label:`Done (${doneCount})`},
+          ].map(({k,label}) => (
+            <button key={k} onClick={()=>setFilter(k)} style={{
+              flex:1, padding:"7px 0",
+              background: filter===k ? "rgba(180,160,220,0.14)" : "transparent",
+              border: `1px solid ${filter===k ? "rgba(180,160,220,0.3)" : "rgba(180,160,220,0.1)"}`,
+              borderRadius:8, color: filter===k ? "#c8b8e8" : "#5a4f7a",
+              fontSize:11, fontFamily:"'Outfit',sans-serif", letterSpacing:"0.04em",
+              transition:"all 0.18s",
+            }}>{label}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Task list */}
+      <ul style={{listStyle:"none", display:"flex", flexDirection:"column", gap:6, maxHeight:340, overflowY:"auto", paddingRight:2}}>
+        {filtered.length === 0 && (
+          <li style={{textAlign:"center", color:"#3a3258", fontSize:13, padding:"28px 0", letterSpacing:"0.03em"}}>
+            {filter==="done" ? "Nothing completed yet — let's go! 🚀" : "You're all caught up ✓"}
+          </li>
+        )}
+        {filtered.map(task => (
+          <TaskItem key={task.id} task={task} onToggle={toggleTask} onDelete={deleteTask} isNew={task.id===newId} />
+        ))}
+      </ul>
+
+      {doneCount > 0 && (
+        <button onClick={clearDone} style={{
+          background:"transparent", border:"1px solid rgba(180,160,220,0.1)",
+          borderRadius:8, color:"#4a3f6a", fontSize:12,
+          padding:"8px", fontFamily:"'Outfit',sans-serif",
+          letterSpacing:"0.04em", transition:"all 0.18s",
+        }}>Clear completed ({doneCount})</button>
+      )}
+    </div>
+  );
+}
+
+// ─── Productivity Page ────────────────────────────────────────────────────────
+function ProductivityPage({ tasks, meta }) {
+  const days    = getDailyStats(tasks);
+  const today   = days[days.length - 1];
+  const rating  = getProductivityRating(today.done);
+  const lvlInfo = getLevelInfo(meta.totalXP);
+  const streak  = calcStreak(tasks);
+  const weekTotal = days.reduce((a,d)=>a+d.done,0);
+  const weekXP    = days.reduce((a,d)=>a+d.xp,0);
+  const maxDone   = Math.max(...days.map(d=>d.done), 1);
+  const earned    = ACHIEVEMENTS.filter(a => a.check({...meta, streak}));
+
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:16}}>
+
+      {/* Level card */}
+      <div style={{
+        padding:"20px", borderRadius:16,
+        background:"linear-gradient(135deg, rgba(138,112,200,0.18), rgba(180,160,220,0.08))",
+        border:"1px solid rgba(180,160,220,0.2)",
+        position:"relative", overflow:"hidden",
+      }}>
+        <div style={{position:"absolute", top:-30, right:-30, width:120, height:120, borderRadius:"50%",
+          background:"radial-gradient(circle, rgba(180,160,220,0.12), transparent)", pointerEvents:"none"}}/>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12}}>
+          <div>
+            <div style={{color:"#7a6a9a", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", fontWeight:600}}>Level {lvlInfo.level}</div>
+            <div style={{fontFamily:"'Playfair Display',serif", fontSize:22, color:"#e8e0f4", marginTop:2}}>{lvlInfo.title}</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{color:"#c8b8e8", fontSize:26, fontWeight:700, fontFamily:"'Outfit',sans-serif", lineHeight:1}}>{meta.totalXP}</div>
+            <div style={{color:"#5a4f7a", fontSize:11, marginTop:2}}>total XP</div>
+          </div>
+        </div>
+        {/* XP bar */}
+        <div style={{height:6, borderRadius:99, background:"rgba(180,160,220,0.1)", overflow:"hidden", marginBottom:6}}>
+          <div style={{
+            height:"100%", width:`${lvlInfo.pct}%`, borderRadius:99,
+            background:"linear-gradient(90deg, #7a5fc8, #c8b8e8, #f0c870)",
+            boxShadow:"0 0 10px rgba(200,184,232,0.5)",
+            transition:"width 0.8s cubic-bezier(0.34,1.2,0.64,1)",
+          }}/>
+        </div>
+        <div style={{display:"flex", justifyContent:"space-between"}}>
+          <span style={{color:"#5a4f7a", fontSize:10}}>{lvlInfo.xpToNext > 0 ? `${lvlInfo.xpToNext} XP to Level ${lvlInfo.level+1}` : "Max Level"}</span>
+          <span style={{color:"#5a4f7a", fontSize:10}}>{lvlInfo.pct}%</span>
+        </div>
+      </div>
+
+      {/* Stats row */}
+      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8}}>
+        {[
+          {icon:"🔥", val:streak,          label:"Day Streak"},
+          {icon:"✅", val:meta.totalDone,  label:"All Time"},
+          {icon:"⚡", val:weekXP,           label:"XP This Week"},
+        ].map(({icon,val,label}) => (
+          <div key={label} style={{
+            padding:"14px 10px", borderRadius:12, textAlign:"center",
+            background:"rgba(255,255,255,0.03)", border:"1px solid rgba(180,160,220,0.09)",
+          }}>
+            <div style={{fontSize:18, marginBottom:4}}>{icon}</div>
+            <div style={{color:"#c8b8e8", fontSize:20, fontWeight:700, fontFamily:"'Outfit',sans-serif", lineHeight:1}}>{val}</div>
+            <div style={{color:"#4a3f6a", fontSize:10, marginTop:3, letterSpacing:"0.04em"}}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Today hero */}
+      <div style={{
+        display:"flex", alignItems:"center", gap:14, padding:"14px 16px", borderRadius:12,
+        background:`${rating.color}12`, border:`1px solid ${rating.color}30`,
+      }}>
+        <span style={{fontSize:32}}>{rating.emoji}</span>
+        <div style={{flex:1}}>
+          <div style={{color:rating.color, fontSize:16, fontWeight:600, fontFamily:"'Outfit',sans-serif"}}>{rating.label}</div>
+          <div style={{color:"#5a4f7a", fontSize:12, marginTop:2}}>{today.done} tasks · {today.xp} XP earned today</div>
+        </div>
+        <div style={{
+          width:40, height:40, borderRadius:"50%", border:`2px solid ${rating.color}55`,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          background:`${rating.color}18`,
+        }}>
+          <span style={{color:rating.color, fontSize:16, fontWeight:700, fontFamily:"'Outfit',sans-serif"}}>{rating.grade}</span>
+        </div>
+      </div>
+
+      {/* 7-day chart */}
+      <div>
+        <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+          <span style={{color:"#5a4f7a", fontSize:11, letterSpacing:"0.08em", textTransform:"uppercase", fontWeight:600}}>7-Day Activity</span>
+          <span style={{color:"#4a3f6a", fontSize:11}}>{weekTotal} tasks this week</span>
+        </div>
+        <div style={{display:"flex", gap:5, alignItems:"flex-end", height:80}}>
+          {days.map(day => {
+            const r    = getProductivityRating(day.done);
+            const hPct = day.done > 0 ? Math.max((day.done / maxDone) * 100, 12) : 4;
+            const isT  = day.key === todayKey();
+            return (
+              <div key={day.key} style={{flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4, height:"100%", justifyContent:"flex-end"}}>
+                <div style={{
+                  width:"100%", height:`${hPct}%`,
+                  background: day.done===0 ? "rgba(180,160,220,0.06)" : `linear-gradient(180deg, ${r.color}66, ${r.color})`,
+                  borderRadius:"4px 4px 2px 2px",
+                  border: isT ? `1px solid ${r.color}55` : "1px solid transparent",
+                  boxShadow: day.done>0 ? `0 2px 12px ${r.color}33` : "none",
+                  transition:"height 0.5s cubic-bezier(0.34,1.2,0.64,1)",
+                  position:"relative",
+                }}>
+                  {day.done > 0 && (
+                    <div style={{
+                      position:"absolute", top:-18, left:"50%", transform:"translateX(-50%)",
+                      color:r.color, fontSize:10, fontWeight:700, fontFamily:"'Outfit',sans-serif",
+                      whiteSpace:"nowrap",
+                    }}>{day.done}</div>
+                  )}
+                </div>
+                <span style={{color: isT?"#c8b8e8":"#4a3f6a", fontSize:9, fontWeight: isT?600:400}}>{day.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Productivity scale */}
+      <div style={{
+        display:"flex", gap:4, padding:"12px 14px", borderRadius:12,
+        background:"rgba(255,255,255,0.02)", border:"1px solid rgba(180,160,220,0.07)",
+      }}>
+        {[
+          {emoji:"🌙", label:"Rest",     grade:"—", tasks:"0"},
+          {emoji:"🌿", label:"Warming",  grade:"C", tasks:"1"},
+          {emoji:"✦",  label:"On Track", grade:"B", tasks:"2"},
+          {emoji:"⚡", label:"Crushing", grade:"A", tasks:"3-4"},
+          {emoji:"🌟", label:"Legend",   grade:"S", tasks:"5+"},
+        ].map(l=>(
+          <div key={l.grade} style={{flex:1, textAlign:"center", display:"flex", flexDirection:"column", gap:3}}>
+            <span style={{fontSize:14}}>{l.emoji}</span>
+            <span style={{color:"#c8b8e8", fontSize:9, fontWeight:700}}>{l.grade}</span>
+            <span style={{color:"#3a3258", fontSize:8}}>{l.tasks}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Achievements */}
+      <div>
+        <div style={{color:"#5a4f7a", fontSize:11, letterSpacing:"0.08em", textTransform:"uppercase", fontWeight:600, marginBottom:10}}>
+          Achievements · {earned.length}/{ACHIEVEMENTS.length}
+        </div>
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6}}>
+          {ACHIEVEMENTS.map(a => {
+            const unlocked = a.check({...meta, streak});
+            return (
+              <div key={a.id} style={{
+                padding:"10px 8px", borderRadius:10, textAlign:"center",
+                background: unlocked ? "rgba(240,200,112,0.08)" : "rgba(255,255,255,0.02)",
+                border: `1px solid ${unlocked ? "rgba(240,200,112,0.2)" : "rgba(180,160,220,0.07)"}`,
+                opacity: unlocked ? 1 : 0.45,
+                transition:"all 0.2s",
+              }}>
+                <div style={{fontSize:18, marginBottom:3, filter: unlocked ? "none" : "grayscale(1)"}}>{a.icon}</div>
+                <div style={{color: unlocked ? "#e8e0f4" : "#4a3f6a", fontSize:9, fontWeight:600, lineHeight:1.3}}>{a.title}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+const defaultMeta = { totalXP:0, totalDone:0, highDone:0, bestDay:0, earnedAchievements:[] };
+
+export default function App() {
+  const [tasks, setTasks] = useState(() => loadData(STORAGE_KEY, []));
+  const [meta,  setMeta]  = useState(() => loadData(META_KEY,   defaultMeta));
+  const [page,  setPage]  = useState("tasks");
+  const [xpToast, setXpToast]     = useState(null);
+  const [achToast, setAchToast]   = useState(null);
+  const toastQueue = useRef([]);
+
+  useEffect(() => { save(STORAGE_KEY, tasks); }, [tasks]);
+  useEffect(() => { save(META_KEY,    meta);  }, [meta]);
+
+  const processAchievements = useCallback((newMeta) => {
+    const streak = calcStreak(tasks);
+    const newOnes = ACHIEVEMENTS.filter(a =>
+      a.check({...newMeta, streak}) && !newMeta.earnedAchievements.includes(a.id)
+    );
+    if (newOnes.length) {
+      const updated = { ...newMeta, earnedAchievements: [...newMeta.earnedAchievements, ...newOnes.map(a=>a.id)] };
+      setMeta(updated);
+      newOnes.forEach(a => {
+        toastQueue.current.push(a);
+      });
+      if (!achToast) showNextAchToast();
+    } else {
+      setMeta(newMeta);
+    }
+  }, [tasks, achToast]);
+
+  const showNextAchToast = () => {
+    if (!toastQueue.current.length) return;
+    setAchToast(toastQueue.current.shift());
+  };
+
+  const handleXP = useCallback((xp, newMeta) => {
+    setXpToast(xp);
+    processAchievements(newMeta);
+  }, [processAchievements]);
+
+  const streak = calcStreak(tasks);
+  const lvlInfo = getLevelInfo(meta.totalXP);
+
+  return (
+    <div style={{
+      minHeight:"100vh", background:"#0f0d18",
+      display:"flex", flexDirection:"column", alignItems:"center",
+      fontFamily:"'Outfit', sans-serif",
+      position:"relative", overflow:"hidden",
+    }}>
+      {/* Background ambience */}
+      <div style={{position:"fixed",top:-120,left:-100,width:500,height:500,borderRadius:"50%",
+        background:"radial-gradient(circle, rgba(138,112,200,0.09) 0%, transparent 65%)",pointerEvents:"none"}}/>
+      <div style={{position:"fixed",bottom:-100,right:-80,width:400,height:400,borderRadius:"50%",
+        background:"radial-gradient(circle, rgba(180,160,220,0.06) 0%, transparent 65%)",pointerEvents:"none"}}/>
+      <div style={{position:"fixed",top:"40%",left:"60%",width:300,height:300,borderRadius:"50%",
+        background:"radial-gradient(circle, rgba(240,200,112,0.04) 0%, transparent 65%)",pointerEvents:"none"}}/>
+
+      {/* App shell */}
+      <div style={{
+        width:"100%", maxWidth:480,
+        background:"rgba(20,16,32,0.92)", backdropFilter:"blur(20px)",
+        border:"1px solid rgba(180,160,220,0.11)",
+        borderRadius:"0 0 24px 24px",
+        boxShadow:"0 32px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(200,180,240,0.07)",
+        minHeight:"100vh", display:"flex", flexDirection:"column",
+      }}>
+
+        {/* Top bar */}
+        <div style={{
+          padding:"20px 24px 0", display:"flex",
+          alignItems:"center", justifyContent:"space-between",
+          borderBottom:"1px solid rgba(180,160,220,0.07)", paddingBottom:16,
+        }}>
+          <div>
+            <div style={{display:"flex", alignItems:"center", gap:8}}>
+              <span style={{color:"rgba(200,180,240,0.5)", fontSize:11}}>✦</span>
+              <span style={{fontFamily:"'Playfair Display',serif", fontSize:20, color:"#e8e0f4", letterSpacing:"0.01em"}}>Aura</span>
+            </div>
+            <div style={{color:"#4a3f6a", fontSize:11, marginTop:1, letterSpacing:"0.04em"}}>
+              {streak > 0 ? `🔥 ${streak}-day streak` : "Start your streak today"}
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{
+              display:"inline-flex", alignItems:"center", gap:6,
+              padding:"5px 12px", borderRadius:99,
+              background:"rgba(180,160,220,0.08)", border:"1px solid rgba(180,160,220,0.15)",
+            }}>
+              <span style={{fontSize:10, color:"#7a6a9a", letterSpacing:"0.06em", fontWeight:600}}>LV {lvlInfo.level}</span>
+              <span style={{width:1, height:10, background:"rgba(180,160,220,0.2)"}}/>
+              <span style={{fontSize:12, color:"#c8b8e8", fontWeight:700}}>{meta.totalXP} XP</span>
+            </div>
+            <div style={{color:"#3a3258", fontSize:10, marginTop:3}}>{lvlInfo.title}</div>
+          </div>
+        </div>
+
+        {/* Nav */}
+        <div style={{
+          display:"flex", padding:"12px 24px",
+          borderBottom:"1px solid rgba(180,160,220,0.07)",
+          gap:4,
+        }}>
+          {[
+            {k:"tasks",       icon:"◈", label:"Tasks"},
+            {k:"productivity",icon:"◉", label:"Progress"},
+          ].map(({k,icon,label})=>(
+            <button key={k} onClick={()=>setPage(k)} style={{
+              flex:1, padding:"9px 0",
+              background: page===k ? "rgba(180,160,220,0.12)" : "transparent",
+              border: `1px solid ${page===k ? "rgba(180,160,220,0.25)" : "rgba(180,160,220,0.07)"}`,
+              borderRadius:10, color: page===k ? "#c8b8e8" : "#4a3f6a",
+              fontSize:13, fontFamily:"'Outfit',sans-serif",
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+              transition:"all 0.2s", fontWeight: page===k ? 600 : 400,
+              letterSpacing:"0.02em",
+            }}>
+              <span style={{fontSize:12}}>{icon}</span> {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Page content */}
+        <div style={{flex:1, padding:"20px 24px 32px", overflowY:"auto"}}>
+          {page === "tasks"
+            ? <TasksPage tasks={tasks} setTasks={setTasks} meta={meta} setMeta={setMeta} onXP={handleXP} onAchievement={()=>{}}/>
+            : <ProductivityPage tasks={tasks} meta={meta} />
+          }
+        </div>
+      </div>
+
+      {/* Toasts */}
+      {xpToast && <XPToast xp={xpToast} onDone={()=>setXpToast(null)} />}
+      {achToast && <AchievementToast achievement={achToast} onDone={()=>{ setAchToast(null); showNextAchToast(); }} />}
+
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
+        * { box-sizing:border-box; margin:0; padding:0; }
+        html,body { background:#0f0d18; }
+        input::placeholder { color:#3a3258; }
+        ::-webkit-scrollbar { width:3px; }
+        ::-webkit-scrollbar-track { background:transparent; }
+        ::-webkit-scrollbar-thumb { background:#2e2840; border-radius:2px; }
+        button { cursor:pointer; }
+        @keyframes slideIn {
+          from { opacity:0; transform:translateY(-10px) scale(0.97); }
+          to   { opacity:1; transform:translateY(0) scale(1); }
+        }
+        @keyframes toastIn {
+          from { opacity:0; transform:translateX(-50%) translateY(12px) scale(0.95); }
+          to   { opacity:1; transform:translateX(-50%) translateY(0)    scale(1); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 
 </script>
 
