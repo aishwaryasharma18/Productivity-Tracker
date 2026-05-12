@@ -1,1 +1,1221 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const STORAGE_KEY = "aura_tasks_v3";
+const META_KEY    = "aura_meta_v3";
+
+const PRIORITIES = {
+  low:    { label:"Low",    color:"#6b7fa8", xp:10 },
+  medium: { label:"Medium", color:"#c8b8e8", xp:20 },
+  high:   { label:"High",   color:"#f0c080", xp:35 },
+};
+
+const LEVEL_THRESHOLDS = [0,50,120,220,360,550,800,1100,1500,2000];
+const LEVEL_TITLES     = ["Novice","Apprentice","Focused","Steady","Driven","Skilled","Expert","Master","Elite","Legend"];
+const LEVEL_COLORS     = ["#6b7fa8","#7abfa0","#a89fd8","#c8b8e8","#d4a8d4","#e8a870","#f0c080","#f0d898","#e8e0f4","#f8f4ff"];
+
+// Each achievement has: reward type, reward label, bonus XP, rarity
+const ACHIEVEMENTS = [
+  {
+    id:"first",   icon:"🌱", title:"First Step",      desc:"Complete your very first task",
+    rarity:"common",   rewardXP:25,  rewardLabel:"Beginner's Luck",
+    reward:{ type:"xp_boost", label:"+25 Bonus XP", detail:"You started — that's everything." },
+    check:(m)=> m.totalDone >= 1,
+  },
+  {
+    id:"five",    icon:"🔥", title:"On Fire",          desc:"Complete 5 tasks",
+    rarity:"common",   rewardXP:50,  rewardLabel:"Momentum Gift",
+    reward:{ type:"xp_boost", label:"+50 Bonus XP", detail:"You're building momentum. Keep going!" },
+    check:(m)=> m.totalDone >= 5,
+  },
+  {
+    id:"ten",     icon:"⚡", title:"Momentum",         desc:"Complete 10 tasks",
+    rarity:"rare",     rewardXP:80,  rewardLabel:"Energy Crystal",
+    reward:{ type:"badge", label:"Energy Crystal 💎", detail:"A rare crystal awarded to the persistent." },
+    check:(m)=> m.totalDone >= 10,
+  },
+  {
+    id:"twenty",  icon:"🏆", title:"Task Master",      desc:"Complete 20 tasks",
+    rarity:"rare",     rewardXP:120, rewardLabel:"Master's Scroll",
+    reward:{ type:"title", label:"Title: Task Master", detail:"You've earned the right to call yourself a master." },
+    check:(m)=> m.totalDone >= 20,
+  },
+  {
+    id:"fifty",   icon:"👑", title:"Century",          desc:"Complete 50 tasks",
+    rarity:"epic",     rewardXP:300, rewardLabel:"Crown of Persistence",
+    reward:{ type:"crown", label:"Crown of Persistence 👑", detail:"Half a century of tasks. Legendary." },
+    check:(m)=> m.totalDone >= 50,
+  },
+  {
+    id:"streak3", icon:"🌊", title:"Flow State",       desc:"3-day streak",
+    rarity:"common",   rewardXP:40,  rewardLabel:"Flow Potion",
+    reward:{ type:"streak_shield", label:"Streak Shield 🛡️", detail:"Your streak is now protected for 1 day." },
+    check:(m)=> m.streak >= 3,
+  },
+  {
+    id:"streak7", icon:"💫", title:"Week Warrior",     desc:"7-day streak",
+    rarity:"rare",     rewardXP:100, rewardLabel:"Warrior's Gem",
+    reward:{ type:"xp_boost", label:"2× XP Aura (next 5 tasks)", detail:"A week of devotion. Rewarded." },
+    check:(m)=> m.streak >= 7,
+  },
+  {
+    id:"streak14",icon:"🌌", title:"Fortnight Force",  desc:"14-day streak",
+    rarity:"epic",     rewardXP:200, rewardLabel:"Cosmic Fragment",
+    reward:{ type:"title", label:"Title: Unstoppable", detail:"Two weeks straight. You are unstoppable." },
+    check:(m)=> m.streak >= 14,
+  },
+  {
+    id:"streak30",icon:"🌠", title:"Iron Will",        desc:"30-day streak",
+    rarity:"legendary",rewardXP:500, rewardLabel:"Iron Will Trophy",
+    reward:{ type:"legendary", label:"Iron Will Trophy 🌠", detail:"30 days. A monument to discipline." },
+    check:(m)=> m.streak >= 30,
+  },
+  {
+    id:"xp100",   icon:"✨", title:"XP Hunter",        desc:"Earn 100 XP",
+    rarity:"common",   rewardXP:30,  rewardLabel:"XP Chest",
+    reward:{ type:"xp_boost", label:"+30 Bonus XP", detail:"You're learning to earn." },
+    check:(m)=> m.totalXP >= 100,
+  },
+  {
+    id:"xp500",   icon:"🌟", title:"XP Veteran",       desc:"Earn 500 XP",
+    rarity:"rare",     rewardXP:100, rewardLabel:"Veteran's Seal",
+    reward:{ type:"badge", label:"Veteran Seal 🌟", detail:"500 XP — you're no longer a beginner." },
+    check:(m)=> m.totalXP >= 500,
+  },
+  {
+    id:"xp1000",  icon:"💠", title:"XP Titan",         desc:"Earn 1,000 XP",
+    rarity:"epic",     rewardXP:250, rewardLabel:"Titan's Core",
+    reward:{ type:"crown", label:"Titan's Core 💠", detail:"1,000 XP. A titan walks among us." },
+    check:(m)=> m.totalXP >= 1000,
+  },
+  {
+    id:"high3",   icon:"🎯", title:"High Achiever",    desc:"Complete 3 high-priority tasks",
+    rarity:"rare",     rewardXP:75,  rewardLabel:"Focus Badge",
+    reward:{ type:"badge", label:"Focus Badge 🎯", detail:"You tackle what matters most." },
+    check:(m)=> m.highDone >= 3,
+  },
+  {
+    id:"high10",  icon:"🔮", title:"Elite Executor",   desc:"Complete 10 high-priority tasks",
+    rarity:"epic",     rewardXP:150, rewardLabel:"Crystal Orb",
+    reward:{ type:"crown", label:"Crystal Orb 🔮", detail:"10 high-priority wins. Pure excellence." },
+    check:(m)=> m.highDone >= 10,
+  },
+  {
+    id:"perfect", icon:"⭐", title:"Perfect Day",      desc:"Complete 5+ tasks in one day",
+    rarity:"rare",     rewardXP:90,  rewardLabel:"Perfect Day Badge",
+    reward:{ type:"badge", label:"Perfect Day Star ⭐", detail:"A flawless day. Wear it with pride." },
+    check:(m)=> m.bestDay >= 5,
+  },
+  {
+    id:"perfect10",icon:"🌈",title:"10-Task Day",      desc:"Complete 10+ tasks in one day",
+    rarity:"legendary",rewardXP:400, rewardLabel:"Rainbow Trophy",
+    reward:{ type:"legendary", label:"Rainbow Trophy 🌈", detail:"10 tasks in a single day. Absolutely unreal." },
+    check:(m)=> m.bestDay >= 10,
+  },
+  {
+    id:"level5",  icon:"🦋", title:"Halfway There",    desc:"Reach Level 5",
+    rarity:"epic",     rewardXP:200, rewardLabel:"Butterfly Wings",
+    reward:{ type:"title", label:"Title: The Focused One", detail:"Level 5 — your transformation has begun." },
+    check:(m)=> m.level >= 5,
+  },
+  {
+    id:"level9",  icon:"🌙", title:"Almost Legend",    desc:"Reach Level 9",
+    rarity:"legendary",rewardXP:600, rewardLabel:"Moon Shard",
+    reward:{ type:"legendary", label:"Moon Shard 🌙", detail:"One step from the top. The summit awaits." },
+    check:(m)=> m.level >= 9,
+  },
+];
+
+const RARITY_COLORS = {
+  common:    { border:"rgba(180,160,220,0.35)", glow:"rgba(180,160,220,0.15)", label:"#9a8aba", text:"COMMON"    },
+  rare:      { border:"rgba(100,160,255,0.45)", glow:"rgba(100,160,255,0.15)", label:"#70a8f8", text:"RARE"      },
+  epic:      { border:"rgba(190,100,255,0.5)",  glow:"rgba(190,100,255,0.15)", label:"#c870f8", text:"EPIC"      },
+  legendary: { border:"rgba(255,200,50,0.55)",  glow:"rgba(255,200,50,0.2)",   label:"#f8d050", text:"LEGENDARY" },
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const dateKey = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const todayKey = () => dateKey();
+
+function loadData(key, fallback) {
+  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
+  catch { return fallback; }
+}
+const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+
+function getLevelInfo(xp) {
+  let level = 0;
+  for (let i = LEVEL_THRESHOLDS.length - 1; i >= 0; i--) {
+    if (xp >= LEVEL_THRESHOLDS[i]) { level = i; break; }
+  }
+  const current = LEVEL_THRESHOLDS[level];
+  const next = LEVEL_THRESHOLDS[Math.min(level + 1, LEVEL_THRESHOLDS.length - 1)];
+  const pct = level >= LEVEL_THRESHOLDS.length - 1 ? 100
+    : Math.round(((xp - current) / (next - current)) * 100);
+  return { level, title: LEVEL_TITLES[level], color: LEVEL_COLORS[level], pct, xpToNext: Math.max(0, next - xp) };
+}
+
+function getDailyStats(tasks) {
+  const map = {};
+  tasks.forEach(t => {
+    if (t.done && t.completedAt) {
+      const k = dateKey(new Date(t.completedAt));
+      if (!map[k]) map[k] = { done:0, xp:0 };
+      map[k].done++;
+      map[k].xp += (PRIORITIES[t.priority]?.xp || 20);
+    }
+  });
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const k = dateKey(d);
+    const lbl = i===0?"Today":i===1?"Yest":d.toLocaleDateString("en-US",{weekday:"short"});
+    days.push({ key:k, label:lbl, ...(map[k]||{done:0,xp:0}) });
+  }
+  return days;
+}
+
+function calcStreak(tasks) {
+  const doneMap = {};
+  tasks.forEach(t => {
+    if (t.done && t.completedAt) doneMap[dateKey(new Date(t.completedAt))] = true;
+  });
+  let streak = 0;
+  for (let i = 0; i <= 365; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    if (doneMap[dateKey(d)]) streak++;
+    else if (i > 0) break;
+  }
+  return streak;
+}
+
+function getProductivityRating(done) {
+  if (done === 0) return { label:"Rest",      emoji:"🌙", color:"#5a4f7a", grade:"—" };
+  if (done === 1) return { label:"Warming Up",emoji:"🌿", color:"#7abfa0", grade:"C" };
+  if (done === 2) return { label:"On Track",  emoji:"✦",  color:"#a89fd8", grade:"B" };
+  if (done <= 4)  return { label:"Crushing It",emoji:"⚡",color:"#c8b8e8", grade:"A" };
+                  return { label:"Legend Mode",emoji:"🌟",color:"#f0c870", grade:"S" };
+}
+
+// ─── Confetti ─────────────────────────────────────────────────────────────────
+function Confetti({ colors = ["#c8b8e8","#f0c870","#a89fd8","#7abfa0","#f08080","#80c8f0"] }) {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const pieces = Array.from({length:80}, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height - canvas.height,
+      r: Math.random() * 6 + 3,
+      d: Math.random() * 80 + 10,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      tilt: Math.random() * 10 - 5,
+      tiltAngle: 0,
+      tiltSpeed: Math.random() * 0.1 + 0.05,
+      speed: Math.random() * 3 + 1,
+    }));
+    let frame;
+    let angle = 0;
+    const draw = () => {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      angle += 0.01;
+      pieces.forEach(p => {
+        ctx.beginPath();
+        ctx.lineWidth = p.r / 2;
+        ctx.strokeStyle = p.color;
+        ctx.moveTo(p.x + p.tilt + p.r / 4, p.y);
+        ctx.lineTo(p.x + p.tilt, p.y + p.tilt + p.r / 4);
+        ctx.stroke();
+        p.tiltAngle += p.tiltSpeed;
+        p.y += (Math.cos(angle + p.d) + p.speed);
+        p.x += Math.sin(angle) * 1.5;
+        p.tilt = Math.sin(p.tiltAngle) * 12;
+        if (p.y > canvas.height) {
+          p.y = -10; p.x = Math.random() * canvas.width;
+        }
+      });
+      frame = requestAnimationFrame(draw);
+    };
+    draw();
+    const t = setTimeout(() => cancelAnimationFrame(frame), 3000);
+    return () => { cancelAnimationFrame(frame); clearTimeout(t); };
+  }, []);
+  return (
+    <canvas ref={canvasRef} style={{
+      position:"fixed", top:0, left:0, width:"100%", height:"100%",
+      pointerEvents:"none", zIndex:2000,
+    }}/>
+  );
+}
+
+// ─── Gift Box Modal ───────────────────────────────────────────────────────────
+function GiftModal({ achievement, onClaim }) {
+  const [phase, setPhase] = useState("closed"); // closed → shaking → open → revealed
+  const [showConfetti, setShowConfetti] = useState(false);
+  const r = RARITY_COLORS[achievement.rarity];
+
+  useEffect(() => {
+    const t1 = setTimeout(() => setPhase("shaking"), 300);
+    return () => clearTimeout(t1);
+  }, []);
+
+  const handleOpen = () => {
+    if (phase !== "shaking") return;
+    setPhase("open");
+    setTimeout(() => {
+      setPhase("revealed");
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 3200);
+    }, 500);
+  };
+
+  return (
+    <>
+      {showConfetti && (
+        <Confetti colors={achievement.rarity==="legendary"
+          ? ["#f8d050","#ffa040","#fff8a0","#f0c870"]
+          : achievement.rarity==="epic"
+          ? ["#c870f8","#a040e8","#e8b0ff","#9060d8"]
+          : ["#c8b8e8","#a89fd8","#e8e0f4","#7abfa0"]}
+        />
+      )}
+      <div style={{
+        position:"fixed", inset:0, background:"rgba(8,6,16,0.88)",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        zIndex:1500, backdropFilter:"blur(8px)",
+        animation:"fadeIn 0.25s ease",
+      }}>
+        <div style={{
+          background:"linear-gradient(145deg, rgba(28,22,44,0.98), rgba(18,14,30,0.98))",
+          border:`1px solid ${r.border}`,
+          borderRadius:24, padding:"36px 32px", maxWidth:360, width:"90%",
+          textAlign:"center",
+          boxShadow:`0 32px 80px rgba(0,0,0,0.7), 0 0 60px ${r.glow}`,
+          animation:"modalIn 0.4s cubic-bezier(0.34,1.3,0.64,1)",
+          position:"relative", overflow:"hidden",
+        }}>
+          {/* Rarity shimmer top */}
+          <div style={{
+            position:"absolute", top:0, left:0, right:0, height:2,
+            background:`linear-gradient(90deg, transparent, ${r.border}, transparent)`,
+          }}/>
+
+          {/* Rarity tag */}
+          <div style={{
+            display:"inline-flex", alignItems:"center", gap:5,
+            padding:"3px 10px", borderRadius:99, marginBottom:20,
+            background:`${r.glow}`, border:`1px solid ${r.border}`,
+          }}>
+            <span style={{color:r.label, fontSize:9, fontWeight:800, letterSpacing:"0.12em"}}>{r.text}</span>
+          </div>
+
+          {/* Achievement info */}
+          <div style={{fontSize:48, marginBottom:8, lineHeight:1,
+            filter: phase==="revealed" ? "none" : "grayscale(0.3)",
+            transition:"filter 0.4s",
+          }}>{achievement.icon}</div>
+          <div style={{
+            fontFamily:"'Playfair Display',serif", fontSize:22,
+            color:"#e8e0f4", marginBottom:4,
+          }}>{achievement.title}</div>
+          <div style={{color:"#7a6a9a", fontSize:13, marginBottom:24}}>{achievement.desc}</div>
+
+          {/* Gift box / reward reveal */}
+          {phase !== "revealed" ? (
+            <div style={{display:"flex", flexDirection:"column", alignItems:"center", gap:16}}>
+              <button
+                onClick={handleOpen}
+                style={{
+                  fontSize:72, lineHeight:1, background:"none", border:"none",
+                  cursor: phase==="shaking" ? "pointer" : "default",
+                  display:"block",
+                  animation: phase==="shaking" ? "shake 0.5s ease infinite" : phase==="open" ? "popOpen 0.4s ease forwards" : "none",
+                  filter: phase==="shaking" ? "drop-shadow(0 0 20px rgba(240,200,112,0.5))" : "none",
+                  transition:"filter 0.3s",
+                }}>
+                🎁
+              </button>
+              {phase==="shaking" && (
+                <div style={{color:"#7a6a9a", fontSize:13, letterSpacing:"0.04em"}}>
+                  Tap to open your reward
+                </div>
+              )}
+              {phase==="open" && (
+                <div style={{color:"#c8b8e8", fontSize:13}}>Opening...</div>
+              )}
+            </div>
+          ) : (
+            <div style={{animation:"rewardReveal 0.5s cubic-bezier(0.34,1.3,0.64,1)"}}>
+              {/* Reward card */}
+              <div style={{
+                background:`linear-gradient(135deg, ${r.glow}, rgba(255,255,255,0.02))`,
+                border:`1px solid ${r.border}`,
+                borderRadius:16, padding:"20px 16px", marginBottom:20,
+              }}>
+                <div style={{fontSize:32, marginBottom:8}}>{
+                  achievement.reward.type==="legendary" ? "🏆" :
+                  achievement.reward.type==="crown"     ? "💎" :
+                  achievement.reward.type==="badge"     ? "🎖️" :
+                  achievement.reward.type==="title"     ? "📜" :
+                  achievement.reward.type==="streak_shield" ? "🛡️" : "✨"
+                }</div>
+                <div style={{color:r.label, fontSize:10, fontWeight:800, letterSpacing:"0.1em", marginBottom:6}}>
+                  REWARD UNLOCKED
+                </div>
+                <div style={{color:"#e8e0f4", fontSize:16, fontWeight:600, marginBottom:4}}>
+                  {achievement.reward.label}
+                </div>
+                <div style={{color:"#7a6a9a", fontSize:12, lineHeight:1.5}}>
+                  {achievement.reward.detail}
+                </div>
+                {achievement.rewardXP > 0 && (
+                  <div style={{
+                    marginTop:12, display:"inline-flex", alignItems:"center", gap:6,
+                    padding:"5px 14px", borderRadius:99,
+                    background:"rgba(200,184,232,0.12)", border:"1px solid rgba(200,184,232,0.25)",
+                  }}>
+                    <span style={{fontSize:12}}>✨</span>
+                    <span style={{color:"#c8b8e8", fontSize:13, fontWeight:700}}>+{achievement.rewardXP} Bonus XP</span>
+                  </div>
+                )}
+              </div>
+
+              <button onClick={onClaim} style={{
+                width:"100%", padding:"13px",
+                background:`linear-gradient(135deg, ${r.label}33, ${r.label}18)`,
+                border:`1px solid ${r.border}`,
+                borderRadius:12, color:r.label,
+                fontSize:14, fontWeight:700, fontFamily:"'Outfit',sans-serif",
+                letterSpacing:"0.04em",
+                boxShadow:`0 4px 20px ${r.glow}`,
+                transition:"transform 0.15s, box-shadow 0.15s",
+              }}>
+                Claim Reward ✓
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── Level Up Modal ───────────────────────────────────────────────────────────
+function LevelUpModal({ level, title, color, onClose }) {
+  return (
+    <>
+      <Confetti colors={[color, color+"aa", "#e8e0f4", "#f0c870", color+"55"]} />
+      <div style={{
+        position:"fixed", inset:0, background:"rgba(8,6,16,0.9)",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        zIndex:1500, backdropFilter:"blur(10px)",
+        animation:"fadeIn 0.3s ease",
+      }}>
+        <div style={{
+          textAlign:"center", maxWidth:320, width:"90%",
+          animation:"modalIn 0.5s cubic-bezier(0.34,1.3,0.64,1)",
+        }}>
+          {/* Ring */}
+          <div style={{
+            width:120, height:120, borderRadius:"50%", margin:"0 auto 24px",
+            background:`radial-gradient(circle, ${color}22, transparent 70%)`,
+            border:`2px solid ${color}55`,
+            display:"flex", alignItems:"center", justifyContent:"center",
+            position:"relative",
+            boxShadow:`0 0 40px ${color}44, 0 0 80px ${color}22`,
+          }}>
+            <div style={{
+              position:"absolute", inset:-8, borderRadius:"50%",
+              border:`1px solid ${color}22`,
+              animation:"spinRing 4s linear infinite",
+            }}/>
+            <span style={{fontSize:48, lineHeight:1}}>⬆</span>
+          </div>
+
+          <div style={{color:`${color}`, fontSize:11, fontWeight:800, letterSpacing:"0.14em", marginBottom:8}}>
+            LEVEL UP!
+          </div>
+          <div style={{
+            fontFamily:"'Playfair Display',serif",
+            fontSize:36, color:"#e8e0f4", lineHeight:1, marginBottom:6,
+          }}>Level {level}</div>
+          <div style={{
+            fontFamily:"'Playfair Display',serif",
+            fontSize:18, color:color, marginBottom:24, fontStyle:"italic",
+          }}>{title}</div>
+          <div style={{color:"#5a4f7a", fontSize:13, marginBottom:28, lineHeight:1.6}}>
+            You've reached a new level of mastery.<br/>Keep building. Keep growing.
+          </div>
+          <button onClick={onClose} style={{
+            padding:"12px 32px", borderRadius:12,
+            background:`linear-gradient(135deg, ${color}33, ${color}18)`,
+            border:`1px solid ${color}55`,
+            color:color, fontSize:14, fontWeight:700,
+            fontFamily:"'Outfit',sans-serif", letterSpacing:"0.04em",
+            boxShadow:`0 4px 20px ${color}33`,
+          }}>
+            Onward →
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── XP Toast ─────────────────────────────────────────────────────────────────
+function XPToast({ xp, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2000); return () => clearTimeout(t); }, []);
+  return (
+    <div style={{
+      position:"fixed", bottom:40, left:"50%", transform:"translateX(-50%)",
+      background:"rgba(22,17,38,0.97)", border:"1px solid rgba(200,184,232,0.3)",
+      borderRadius:99, padding:"10px 22px",
+      display:"flex", alignItems:"center", gap:8,
+      boxShadow:"0 8px 32px rgba(0,0,0,0.5), 0 0 24px rgba(180,160,220,0.18)",
+      zIndex:900, animation:"toastUp 0.35s cubic-bezier(0.34,1.56,0.64,1)",
+      fontFamily:"'Outfit',sans-serif", whiteSpace:"nowrap",
+    }}>
+      <span style={{fontSize:14}}>✨</span>
+      <span style={{color:"#c8b8e8", fontSize:14, fontWeight:700}}>+{xp} XP</span>
+    </div>
+  );
+}
+
+// ─── Priority Picker ──────────────────────────────────────────────────────────
+function PriorityPicker({ value, onChange }) {
+  return (
+    <div style={{display:"flex", gap:4}}>
+      {Object.entries(PRIORITIES).map(([k,p]) => (
+        <button key={k} onClick={()=>onChange(k)} style={{
+          padding:"4px 10px", borderRadius:6,
+          border:`1px solid ${value===k ? p.color+"88" : "rgba(180,160,220,0.1)"}`,
+          background: value===k ? p.color+"1a" : "transparent",
+          color: value===k ? p.color : "#4a3f6a",
+          fontSize:11, fontFamily:"'Outfit',sans-serif",
+          letterSpacing:"0.04em", transition:"all 0.18s",
+        }}>{p.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Task Item ────────────────────────────────────────────────────────────────
+function TaskItem({ task, onToggle, onDelete, isNew }) {
+  const [hovered, setHovered] = useState(false);
+  const [burst, setBurst]     = useState(false);
+  const p = PRIORITIES[task.priority] || PRIORITIES.medium;
+
+  const handleToggle = () => {
+    if (!task.done) { setBurst(true); setTimeout(()=>setBurst(false),600); }
+    onToggle(task.id);
+  };
+
+  return (
+    <li
+      onMouseEnter={()=>setHovered(true)}
+      onMouseLeave={()=>setHovered(false)}
+      style={{
+        display:"flex", alignItems:"center", gap:12,
+        padding:"13px 14px 13px 0",
+        background: burst ? `${p.color}0a` : hovered&&!task.done ? "rgba(180,160,220,0.05)" : "transparent",
+        borderBottom:"1px solid rgba(180,160,220,0.06)",
+        transition:"all 0.22s ease",
+        animation: isNew ? "slideIn 0.35s cubic-bezier(0.34,1.3,0.64,1)" : "none",
+        position:"relative",
+      }}
+    >
+      {/* Priority stripe */}
+      <div style={{
+        width:3, alignSelf:"stretch", borderRadius:99,
+        background: task.done ? "rgba(180,160,220,0.1)" : `${p.color}66`,
+        flexShrink:0,
+      }}/>
+
+      {/* Checkbox */}
+      <button onClick={handleToggle} style={{
+        width:22, height:22, flexShrink:0, borderRadius:6,
+        border: task.done ? "none" : `1.5px solid ${p.color}55`,
+        background: task.done ? p.color : burst ? `${p.color}33` : "transparent",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        transition:"all 0.2s",
+        transform: burst ? "scale(1.25)" : "scale(1)",
+        boxShadow: task.done ? `0 0 12px ${p.color}55` : burst ? `0 0 16px ${p.color}66` : "none",
+      }}>
+        {task.done && (
+          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+            <path d="M1 4L3.5 6.5L9 1" stroke="#0f0d18" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        )}
+      </button>
+
+      {/* Text */}
+      <div style={{flex:1, minWidth:0}}>
+        <div style={{
+          fontSize:14, color: task.done ? "#3a3258" : "#ddd6f0",
+          textDecoration: task.done ? "line-through" : "none",
+          textDecorationColor:"rgba(180,160,220,0.2)",
+          wordBreak:"break-word", lineHeight:1.45, transition:"color 0.2s",
+        }}>{task.text}</div>
+        <div style={{display:"flex", gap:8, marginTop:3, alignItems:"center"}}>
+          <span style={{
+            fontSize:10, fontWeight:600, letterSpacing:"0.06em",
+            color: task.done ? "#2e2840" : `${p.color}99`,
+            textTransform:"uppercase",
+          }}>{p.label}</span>
+          <span style={{color:"#2a2240", fontSize:10}}>·</span>
+          <span style={{fontSize:10, color:"#2e2840"}}>+{p.xp} XP</span>
+        </div>
+      </div>
+
+      {/* Delete */}
+      <button onClick={()=>onDelete(task.id)} style={{
+        width:28, height:28, flexShrink:0, background:"transparent", border:"none",
+        borderRadius:6, color: hovered ? "#e89090" : "transparent",
+        fontSize:18, display:"flex", alignItems:"center", justifyContent:"center",
+        transition:"all 0.18s",
+      }}>×</button>
+    </li>
+  );
+}
+
+// ─── Tasks Page ───────────────────────────────────────────────────────────────
+function TasksPage({ tasks, setTasks, meta, onXP }) {
+  const [input, setInput]       = useState("");
+  const [priority, setPriority] = useState("medium");
+  const [filter, setFilter]     = useState("all");
+  const [newId, setNewId]       = useState(null);
+  const [focused, setFocused]   = useState(false);
+  const inputRef = useRef(null);
+
+  const todayDone = tasks.filter(t => {
+    if (!t.done||!t.completedAt) return false;
+    return dateKey(new Date(t.completedAt))===todayKey();
+  }).length;
+  const rating  = getProductivityRating(todayDone);
+  const total   = tasks.length;
+  const done    = tasks.filter(t=>t.done).length;
+  const pct     = total > 0 ? Math.round((done/total)*100) : 0;
+
+  const addTask = () => {
+    const text = input.trim();
+    if (!text) return;
+    const id = Date.now();
+    setTasks(prev => [{ id, text, done:false, priority, createdAt:id, completedAt:null }, ...prev]);
+    setNewId(id); setTimeout(()=>setNewId(null),400);
+    setInput(""); inputRef.current?.focus();
+  };
+
+  const toggleTask = useCallback((id) => {
+    setTasks(prev => prev.map(t => {
+      if (t.id!==id) return t;
+      const nowDone = !t.done;
+      if (nowDone) {
+        const xp = PRIORITIES[t.priority]?.xp || 20;
+        const todayCount = prev.filter(tt =>
+          tt.done && tt.completedAt &&
+          dateKey(new Date(tt.completedAt))===todayKey()
+        ).length + 1;
+        onXP(xp, t.priority, todayCount);
+      }
+      return { ...t, done:nowDone, completedAt:nowDone?Date.now():null };
+    }));
+  }, [onXP]);
+
+  const deleteTask = (id) => setTasks(prev=>prev.filter(t=>t.id!==id));
+  const clearDone  = ()  => setTasks(prev=>prev.filter(t=>!t.done));
+
+  const filtered = tasks.filter(t =>
+    filter==="active"?!t.done : filter==="done"?t.done : true
+  );
+
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:14}}>
+
+      {/* Status banner */}
+      <div style={{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"11px 14px", borderRadius:12,
+        background:`linear-gradient(135deg, ${rating.color}12, ${rating.color}06)`,
+        border:`1px solid ${rating.color}2a`,
+      }}>
+        <div style={{display:"flex", alignItems:"center", gap:10}}>
+          <span style={{fontSize:18}}>{rating.emoji}</span>
+          <div>
+            <div style={{color:rating.color, fontSize:13, fontWeight:600}}>{rating.label}</div>
+            <div style={{color:"#4a3f6a", fontSize:11, marginTop:1}}>{todayDone} done today</div>
+          </div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{color:"#c8b8e8", fontSize:22, fontWeight:700, fontFamily:"'Outfit',sans-serif", lineHeight:1}}>{pct}%</div>
+          <div style={{color:"#3a3258", fontSize:10, marginTop:1}}>complete</div>
+        </div>
+      </div>
+
+      {total > 0 && (
+        <div style={{height:2, borderRadius:99, background:"rgba(180,160,220,0.07)", overflow:"hidden", marginTop:-6}}>
+          <div style={{
+            height:"100%", borderRadius:99, width:`${pct}%`,
+            background:"linear-gradient(90deg, #7a5fc8, #c8b8e8)",
+            transition:"width 0.7s cubic-bezier(0.34,1.2,0.64,1)",
+            boxShadow:"0 0 8px rgba(180,160,220,0.4)",
+          }}/>
+        </div>
+      )}
+
+      {/* Add input */}
+      <div style={{
+        background: focused ? "rgba(180,160,220,0.06)" : "rgba(255,255,255,0.025)",
+        border:`1px solid ${focused ? "rgba(180,160,220,0.25)" : "rgba(180,160,220,0.1)"}`,
+        borderRadius:14, padding:"13px 14px",
+        display:"flex", flexDirection:"column", gap:9,
+        transition:"all 0.2s",
+      }}>
+        <div style={{display:"flex", gap:10, alignItems:"center"}}>
+          <input ref={inputRef} value={input}
+            onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&addTask()}
+            onFocus={()=>setFocused(true)}
+            onBlur={()=>setFocused(false)}
+            placeholder="Add a task..."
+            style={{
+              flex:1, background:"transparent", border:"none", outline:"none",
+              color:"#e8e0f4", fontSize:14, fontFamily:"'Outfit',sans-serif",
+            }}
+          />
+          <button onClick={addTask} style={{
+            width:32, height:32, borderRadius:8, flexShrink:0,
+            background:"linear-gradient(135deg, #7a5fc8, #c8b8e8)",
+            border:"none", color:"#0f0d18", fontSize:20, fontWeight:700,
+            display:"flex", alignItems:"center", justifyContent:"center",
+            boxShadow:"0 3px 12px rgba(122,95,200,0.4)",
+          }}>+</button>
+        </div>
+        <PriorityPicker value={priority} onChange={setPriority}/>
+      </div>
+
+      {/* Filters */}
+      {total > 0 && (
+        <div style={{display:"flex", gap:5}}>
+          {[
+            {k:"all",    l:`All (${total})`},
+            {k:"active", l:`Active (${tasks.filter(t=>!t.done).length})`},
+            {k:"done",   l:`Done (${done})`},
+          ].map(({k,l})=>(
+            <button key={k} onClick={()=>setFilter(k)} style={{
+              flex:1, padding:"7px 0",
+              background: filter===k?"rgba(180,160,220,0.12)":"transparent",
+              border:`1px solid ${filter===k?"rgba(180,160,220,0.28)":"rgba(180,160,220,0.08)"}`,
+              borderRadius:8, color:filter===k?"#c8b8e8":"#4a3f6a",
+              fontSize:11, fontFamily:"'Outfit',sans-serif", letterSpacing:"0.03em",
+              transition:"all 0.18s",
+            }}>{l}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Task list */}
+      <ul style={{listStyle:"none", display:"flex", flexDirection:"column", maxHeight:360, overflowY:"auto", paddingRight:2}}>
+        {filtered.length===0 && (
+          <li style={{textAlign:"center", color:"#2e2840", fontSize:13, padding:"32px 0", letterSpacing:"0.03em"}}>
+            {filter==="done"?"No completed tasks yet 🚀":"You're all caught up ✓"}
+          </li>
+        )}
+        {filtered.map(task=>(
+          <TaskItem key={task.id} task={task} onToggle={toggleTask} onDelete={deleteTask} isNew={task.id===newId}/>
+        ))}
+      </ul>
+
+      {done > 0 && (
+        <button onClick={clearDone} style={{
+          background:"transparent", border:"1px solid rgba(180,160,220,0.08)",
+          borderRadius:8, color:"#3a3258", fontSize:12, padding:"8px",
+          fontFamily:"'Outfit',sans-serif", letterSpacing:"0.04em",
+          transition:"all 0.18s",
+        }}>Clear completed ({done})</button>
+      )}
+    </div>
+  );
+}
+
+// ─── Progress Page ────────────────────────────────────────────────────────────
+function ProgressPage({ tasks, meta }) {
+  const [selectedAch, setSelectedAch] = useState(null);
+  const days     = getDailyStats(tasks);
+  const today    = days[days.length-1];
+  const rating   = getProductivityRating(today.done);
+  const lvlInfo  = getLevelInfo(meta.totalXP);
+  const streak   = calcStreak(tasks);
+  const weekDone = days.reduce((a,d)=>a+d.done,0);
+  const weekXP   = days.reduce((a,d)=>a+d.xp,0);
+  const maxDone  = Math.max(...days.map(d=>d.done),1);
+
+  const earned = ACHIEVEMENTS.filter(a=>a.check({...meta,streak,level:lvlInfo.level}));
+  const groups = { legendary:[], epic:[], rare:[], common:[] };
+  ACHIEVEMENTS.forEach(a => {
+    const unlocked = a.check({...meta,streak,level:lvlInfo.level});
+    groups[a.rarity].push({...a,unlocked});
+  });
+
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:16}}>
+
+      {/* Level card */}
+      <div style={{
+        padding:"20px", borderRadius:16,
+        background:"linear-gradient(135deg, rgba(122,95,200,0.15), rgba(180,160,220,0.06))",
+        border:"1px solid rgba(180,160,220,0.18)", position:"relative", overflow:"hidden",
+      }}>
+        <div style={{
+          position:"absolute", top:-40, right:-40, width:140, height:140, borderRadius:"50%",
+          background:`radial-gradient(circle, ${lvlInfo.color}18, transparent)`, pointerEvents:"none",
+        }}/>
+        <div style={{display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:14}}>
+          <div>
+            <div style={{color:"#5a4f7a", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", fontWeight:600}}>
+              Level {lvlInfo.level}
+            </div>
+            <div style={{fontFamily:"'Playfair Display',serif", fontSize:22, color:"#e8e0f4", marginTop:2}}>
+              {lvlInfo.title}
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{color:lvlInfo.color, fontSize:28, fontWeight:700, fontFamily:"'Outfit',sans-serif", lineHeight:1}}>
+              {meta.totalXP}
+            </div>
+            <div style={{color:"#4a3f6a", fontSize:11, marginTop:2}}>total XP</div>
+          </div>
+        </div>
+        <div style={{height:7, borderRadius:99, background:"rgba(180,160,220,0.1)", overflow:"hidden", marginBottom:7}}>
+          <div style={{
+            height:"100%", width:`${lvlInfo.pct}%`, borderRadius:99,
+            background:`linear-gradient(90deg, #7a5fc8, ${lvlInfo.color}, #f0c870)`,
+            boxShadow:`0 0 12px ${lvlInfo.color}55`,
+            transition:"width 0.8s cubic-bezier(0.34,1.2,0.64,1)",
+          }}/>
+        </div>
+        <div style={{display:"flex", justifyContent:"space-between"}}>
+          <span style={{color:"#4a3f6a", fontSize:10}}>
+            {lvlInfo.xpToNext>0 ? `${lvlInfo.xpToNext} XP to Level ${lvlInfo.level+1}` : "Max Level 🏆"}
+          </span>
+          <span style={{color:"#4a3f6a", fontSize:10}}>{lvlInfo.pct}%</span>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>
+        {[
+          {icon:"🔥", val:streak,         label:"Streak"},
+          {icon:"✅", val:meta.totalDone, label:"All Time"},
+          {icon:"⚡", val:weekXP,         label:"Week XP"},
+          {icon:"🎯", val:meta.highDone,  label:"High Pri"},
+          {icon:"📅", val:weekDone,       label:"This Week"},
+          {icon:"🏆", val:earned.length,  label:"Badges"},
+        ].map(({icon,val,label})=>(
+          <div key={label} style={{
+            padding:"12px 8px", borderRadius:12, textAlign:"center",
+            background:"rgba(255,255,255,0.025)", border:"1px solid rgba(180,160,220,0.07)",
+          }}>
+            <div style={{fontSize:16, marginBottom:5}}>{icon}</div>
+            <div style={{color:"#c8b8e8", fontSize:18, fontWeight:700, fontFamily:"'Outfit',sans-serif", lineHeight:1}}>
+              {val}
+            </div>
+            <div style={{color:"#3a3258", fontSize:9, marginTop:3, letterSpacing:"0.04em"}}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Today card */}
+      <div style={{
+        display:"flex", alignItems:"center", gap:12, padding:"13px 16px",
+        borderRadius:12, background:`${rating.color}0e`, border:`1px solid ${rating.color}28`,
+      }}>
+        <span style={{fontSize:28}}>{rating.emoji}</span>
+        <div style={{flex:1}}>
+          <div style={{color:rating.color, fontSize:15, fontWeight:600}}>{rating.label}</div>
+          <div style={{color:"#4a3f6a", fontSize:12, marginTop:1}}>{today.done} tasks · {today.xp} XP today</div>
+        </div>
+        <div style={{
+          width:38, height:38, borderRadius:"50%",
+          border:`2px solid ${rating.color}44`,
+          background:`${rating.color}14`,
+          display:"flex", alignItems:"center", justifyContent:"center",
+        }}>
+          <span style={{color:rating.color, fontSize:15, fontWeight:700, fontFamily:"'Outfit',sans-serif"}}>
+            {rating.grade}
+          </span>
+        </div>
+      </div>
+
+      {/* 7-day bar chart */}
+      <div>
+        <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14}}>
+          <span style={{color:"#4a3f6a", fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", fontWeight:600}}>
+            7-Day Activity
+          </span>
+          <span style={{color:"#3a3258", fontSize:11}}>{weekDone} tasks · {weekXP} XP</span>
+        </div>
+        <div style={{display:"flex", gap:4, alignItems:"flex-end", height:80}}>
+          {days.map(day=>{
+            const r   = getProductivityRating(day.done);
+            const h   = day.done>0 ? Math.max((day.done/maxDone)*100,14) : 5;
+            const isT = day.key===todayKey();
+            return (
+              <div key={day.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,height:"100%",justifyContent:"flex-end"}}>
+                <div style={{
+                  width:"100%", height:`${h}%`, borderRadius:"5px 5px 2px 2px",
+                  background: day.done===0 ? "rgba(180,160,220,0.05)"
+                    : `linear-gradient(180deg, ${r.color}55, ${r.color})`,
+                  border: isT ? `1px solid ${r.color}44` : "1px solid transparent",
+                  boxShadow: day.done>0 ? `0 2px 10px ${r.color}33` : "none",
+                  transition:"height 0.5s cubic-bezier(0.34,1.2,0.64,1)",
+                  position:"relative",
+                }}>
+                  {day.done>0 && (
+                    <div style={{
+                      position:"absolute", top:-18, left:"50%", transform:"translateX(-50%)",
+                      color:r.color, fontSize:10, fontWeight:700, fontFamily:"'Outfit',sans-serif",
+                    }}>{day.done}</div>
+                  )}
+                </div>
+                <span style={{color:isT?"#c8b8e8":"#3a3258", fontSize:9, fontWeight:isT?600:400}}>{day.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Achievements section */}
+      <div>
+        <div style={{
+          display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14,
+        }}>
+          <span style={{color:"#4a3f6a", fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", fontWeight:600}}>
+            Achievements
+          </span>
+          <span style={{
+            padding:"3px 10px", borderRadius:99,
+            background:"rgba(200,184,232,0.1)", border:"1px solid rgba(200,184,232,0.15)",
+            color:"#c8b8e8", fontSize:11, fontWeight:600,
+          }}>{earned.length} / {ACHIEVEMENTS.length}</span>
+        </div>
+
+        {["legendary","epic","rare","common"].map(rarity=>{
+          const rc = RARITY_COLORS[rarity];
+          const items = groups[rarity];
+          const unlockedCount = items.filter(a=>a.unlocked).length;
+          return (
+            <div key={rarity} style={{marginBottom:16}}>
+              <div style={{
+                display:"flex", alignItems:"center", gap:8, marginBottom:8,
+              }}>
+                <div style={{flex:1,height:1,background:`${rc.border}`}}/>
+                <span style={{color:rc.label, fontSize:9, fontWeight:800, letterSpacing:"0.1em"}}>
+                  {rc.text} · {unlockedCount}/{items.length}
+                </span>
+                <div style={{flex:1,height:1,background:`${rc.border}`}}/>
+              </div>
+              <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6}}>
+                {items.map(a=>(
+                  <button
+                    key={a.id}
+                    onClick={()=>a.unlocked && setSelectedAch(a)}
+                    style={{
+                      padding:"12px 8px", borderRadius:12, textAlign:"center",
+                      background: a.unlocked ? `${rc.glow}` : "rgba(255,255,255,0.015)",
+                      border:`1px solid ${a.unlocked ? rc.border : "rgba(180,160,220,0.06)"}`,
+                      opacity: a.unlocked ? 1 : 0.35,
+                      cursor: a.unlocked ? "pointer" : "default",
+                      transition:"all 0.2s",
+                      boxShadow: a.unlocked ? `0 2px 12px ${rc.glow}` : "none",
+                    }}
+                  >
+                    <div style={{
+                      fontSize:20, marginBottom:4,
+                      filter: a.unlocked ? "none" : "grayscale(1) brightness(0.4)",
+                    }}>{a.icon}</div>
+                    <div style={{
+                      color: a.unlocked ? "#e8e0f4" : "#2e2840",
+                      fontSize:9, fontWeight:600, lineHeight:1.3, marginBottom:3,
+                    }}>{a.title}</div>
+                    {a.unlocked && (
+                      <div style={{
+                        fontSize:8, color:rc.label,
+                        fontWeight:700, letterSpacing:"0.06em",
+                      }}>CLAIMED ✓</div>
+                    )}
+                    {!a.unlocked && (
+                      <div style={{fontSize:8, color:"#2a2240", letterSpacing:"0.04em"}}>
+                        {a.desc}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tap to see details modal */}
+      {selectedAch && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(8,6,16,0.85)",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          zIndex:1500, backdropFilter:"blur(8px)",
+        }} onClick={()=>setSelectedAch(null)}>
+          <div style={{
+            background:"linear-gradient(145deg, rgba(28,22,44,0.99), rgba(18,14,30,0.99))",
+            border:`1px solid ${RARITY_COLORS[selectedAch.rarity].border}`,
+            borderRadius:20, padding:"28px 24px", maxWidth:320, width:"90%",
+            textAlign:"center",
+            boxShadow:`0 24px 60px rgba(0,0,0,0.7), 0 0 40px ${RARITY_COLORS[selectedAch.rarity].glow}`,
+            animation:"modalIn 0.3s cubic-bezier(0.34,1.3,0.64,1)",
+          }} onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:48, marginBottom:10}}>{selectedAch.icon}</div>
+            <div style={{
+              color:RARITY_COLORS[selectedAch.rarity].label,
+              fontSize:9, fontWeight:800, letterSpacing:"0.12em", marginBottom:8,
+            }}>{RARITY_COLORS[selectedAch.rarity].text}</div>
+            <div style={{fontFamily:"'Playfair Display',serif", fontSize:20, color:"#e8e0f4", marginBottom:4}}>
+              {selectedAch.title}
+            </div>
+            <div style={{color:"#7a6a9a", fontSize:13, marginBottom:20}}>{selectedAch.desc}</div>
+            <div style={{
+              background:`${RARITY_COLORS[selectedAch.rarity].glow}`,
+              border:`1px solid ${RARITY_COLORS[selectedAch.rarity].border}`,
+              borderRadius:12, padding:"14px", marginBottom:16,
+            }}>
+              <div style={{fontSize:24, marginBottom:6}}>{selectedAch.reward.label.split(" ").pop()}</div>
+              <div style={{color:"#e8e0f4", fontSize:13, fontWeight:600, marginBottom:4}}>
+                {selectedAch.reward.label}
+              </div>
+              <div style={{color:"#5a4f7a", fontSize:12}}>{selectedAch.reward.detail}</div>
+              {selectedAch.rewardXP > 0 && (
+                <div style={{marginTop:10, color:"#c8b8e8", fontSize:12, fontWeight:700}}>
+                  +{selectedAch.rewardXP} Bonus XP earned
+                </div>
+              )}
+            </div>
+            <button onClick={()=>setSelectedAch(null)} style={{
+              background:"rgba(180,160,220,0.1)", border:"1px solid rgba(180,160,220,0.2)",
+              borderRadius:10, color:"#7a6a9a", fontSize:13,
+              padding:"10px 24px", fontFamily:"'Outfit',sans-serif",
+            }}>Close</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+const defaultMeta = {
+  totalXP:0, totalDone:0, highDone:0, bestDay:0,
+  earnedAchievements:[], level:0,
+};
+
+export default function App() {
+  const [tasks,    setTasks]    = useState(()=>loadData(STORAGE_KEY,[]));
+  const [meta,     setMeta]     = useState(()=>loadData(META_KEY,defaultMeta));
+  const [page,     setPage]     = useState("tasks");
+  const [xpToast,  setXpToast]  = useState(null);
+  const [giftQueue,setGiftQueue]= useState([]);
+  const [levelUp,  setLevelUp]  = useState(null);
+  const giftRef = useRef([]);
+
+  useEffect(()=>{ save(STORAGE_KEY,tasks); },[tasks]);
+  useEffect(()=>{ save(META_KEY,meta);     },[meta]);
+
+  const streak = calcStreak(tasks);
+  const lvlInfo = getLevelInfo(meta.totalXP);
+
+  const handleXP = useCallback((xp, priority, todayCount) => {
+    setXpToast(xp);
+
+    setMeta(prev => {
+      const newXP    = prev.totalXP + xp;
+      const newDone  = prev.totalDone + 1;
+      const newHigh  = priority==="high" ? prev.highDone+1 : prev.highDone;
+      const newBest  = todayCount > prev.bestDay ? todayCount : prev.bestDay;
+      const newLvl   = getLevelInfo(newXP).level;
+      const streak_  = calcStreak(tasks);
+
+      const newMeta = {
+        ...prev, totalXP:newXP, totalDone:newDone,
+        highDone:newHigh, bestDay:newBest, level:newLvl,
+      };
+
+      // level up?
+      if (newLvl > prev.level) {
+        const lvInfo = getLevelInfo(newXP);
+        setTimeout(()=>setLevelUp({ level:newLvl, title:lvInfo.title, color:lvInfo.color }), 1200);
+      }
+
+      // new achievements?
+      const checkMeta = { ...newMeta, streak: streak_ };
+      const newAchs = ACHIEVEMENTS.filter(a =>
+        a.check(checkMeta) && !prev.earnedAchievements.includes(a.id)
+      );
+      if (newAchs.length) {
+        newMeta.earnedAchievements = [...prev.earnedAchievements, ...newAchs.map(a=>a.id)];
+        // add bonus XP from achievements
+        const bonusXP = newAchs.reduce((s,a)=>s+a.rewardXP,0);
+        if (bonusXP>0) newMeta.totalXP += bonusXP;
+        setTimeout(()=>{
+          setGiftQueue(q=>[...q,...newAchs]);
+        }, 1800);
+      }
+      return newMeta;
+    });
+  }, [tasks]);
+
+  const claimGift = () => {
+    setGiftQueue(q => q.slice(1));
+  };
+
+  const activeGift = giftQueue[0] || null;
+
+  return (
+    <div style={{
+      minHeight:"100vh", background:"#0f0d18",
+      display:"flex", flexDirection:"column", alignItems:"center",
+      fontFamily:"'Outfit',sans-serif", position:"relative",
+    }}>
+      {/* Ambient blobs */}
+      <div style={{position:"fixed",top:-120,left:-100,width:500,height:500,borderRadius:"50%",
+        background:"radial-gradient(circle, rgba(122,95,200,0.08) 0%, transparent 65%)",pointerEvents:"none"}}/>
+      <div style={{position:"fixed",bottom:-80,right:-80,width:400,height:400,borderRadius:"50%",
+        background:"radial-gradient(circle, rgba(180,160,220,0.05) 0%, transparent 65%)",pointerEvents:"none"}}/>
+      <div style={{position:"fixed",top:"35%",left:"65%",width:280,height:280,borderRadius:"50%",
+        background:"radial-gradient(circle, rgba(240,200,112,0.03) 0%, transparent 65%)",pointerEvents:"none"}}/>
+
+      {/* App shell */}
+      <div style={{
+        width:"100%", maxWidth:480,
+        background:"rgba(18,14,28,0.95)", backdropFilter:"blur(24px)",
+        border:"1px solid rgba(180,160,220,0.09)",
+        borderRadius:"0 0 24px 24px",
+        boxShadow:"0 32px 80px rgba(0,0,0,0.65), inset 0 1px 0 rgba(200,180,240,0.06)",
+        minHeight:"100vh", display:"flex", flexDirection:"column",
+      }}>
+
+        {/* Top bar */}
+        <div style={{
+          padding:"18px 22px 14px", display:"flex",
+          alignItems:"center", justifyContent:"space-between",
+          borderBottom:"1px solid rgba(180,160,220,0.06)",
+        }}>
+          <div>
+            <div style={{display:"flex", alignItems:"center", gap:7}}>
+              <span style={{color:"rgba(200,180,240,0.45)", fontSize:10}}>✦</span>
+              <span style={{fontFamily:"'Playfair Display',serif", fontSize:19, color:"#e8e0f4"}}>Aura</span>
+            </div>
+            <div style={{color:"#3a3258", fontSize:10, marginTop:1, letterSpacing:"0.04em"}}>
+              {streak>0 ? `🔥 ${streak}-day streak` : "Start your streak today"}
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{
+              display:"inline-flex", alignItems:"center", gap:5, padding:"4px 11px", borderRadius:99,
+              background:"rgba(180,160,220,0.07)", border:"1px solid rgba(180,160,220,0.13)",
+            }}>
+              <span style={{fontSize:9, color:"#6a5f8a", letterSpacing:"0.06em", fontWeight:700}}>LV{lvlInfo.level}</span>
+              <span style={{width:1,height:9,background:"rgba(180,160,220,0.2)"}}/>
+              <span style={{fontSize:12, color:"#c8b8e8", fontWeight:700}}>{meta.totalXP} XP</span>
+            </div>
+            <div style={{color:"#2e2840", fontSize:9, marginTop:2}}>{lvlInfo.title}</div>
+          </div>
+        </div>
+
+        {/* Nav */}
+        <div style={{
+          display:"flex", padding:"10px 22px 10px", gap:5,
+          borderBottom:"1px solid rgba(180,160,220,0.06)",
+        }}>
+          {[{k:"tasks",icon:"◈",l:"Tasks"},{k:"progress",icon:"◉",l:"Progress"}].map(({k,icon,l})=>(
+            <button key={k} onClick={()=>setPage(k)} style={{
+              flex:1, padding:"8px 0",
+              background: page===k?"rgba(180,160,220,0.1)":"transparent",
+              border:`1px solid ${page===k?"rgba(180,160,220,0.22)":"rgba(180,160,220,0.06)"}`,
+              borderRadius:9, color:page===k?"#c8b8e8":"#3a3258",
+              fontSize:12, fontFamily:"'Outfit',sans-serif",
+              display:"flex", alignItems:"center", justifyContent:"center", gap:5,
+              transition:"all 0.2s", fontWeight:page===k?600:400,
+              letterSpacing:"0.03em",
+            }}>
+              <span style={{fontSize:11}}>{icon}</span>{l}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div style={{flex:1, padding:"18px 22px 36px", overflowY:"auto"}}>
+          {page==="tasks"
+            ? <TasksPage tasks={tasks} setTasks={setTasks} meta={meta} onXP={handleXP}/>
+            : <ProgressPage tasks={tasks} meta={meta}/>
+          }
+        </div>
+      </div>
+
+      {/* Overlays */}
+      {xpToast  && <XPToast xp={xpToast} onDone={()=>setXpToast(null)}/>}
+      {activeGift && <GiftModal achievement={activeGift} onClaim={claimGift}/>}
+      {levelUp  && <LevelUpModal {...levelUp} onClose={()=>setLevelUp(null)}/>}
+
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
+        * { box-sizing:border-box; margin:0; padding:0; }
+        html,body { background:#0f0d18; }
+        input::placeholder { color:#2e2840; }
+        ::-webkit-scrollbar { width:3px; }
+        ::-webkit-scrollbar-track { background:transparent; }
+        ::-webkit-scrollbar-thumb { background:#2a2040; border-radius:2px; }
+        button { cursor:pointer; }
+        @keyframes slideIn {
+          from { opacity:0; transform:translateY(-8px) scale(0.97); }
+          to   { opacity:1; transform:translateY(0) scale(1); }
+        }
+        @keyframes toastUp {
+          from { opacity:0; transform:translateX(-50%) translateY(10px) scale(0.95); }
+          to   { opacity:1; transform:translateX(-50%) translateY(0) scale(1); }
+        }
+        @keyframes fadeIn {
+          from { opacity:0; } to { opacity:1; }
+        }
+        @keyframes modalIn {
+          from { opacity:0; transform:scale(0.88) translateY(16px); }
+          to   { opacity:1; transform:scale(1)    translateY(0); }
+        }
+        @keyframes shake {
+          0%,100% { transform:rotate(0deg); }
+          15%     { transform:rotate(-12deg) scale(1.08); }
+          30%     { transform:rotate(12deg)  scale(1.08); }
+          45%     { transform:rotate(-8deg)  scale(1.05); }
+          60%     { transform:rotate(8deg)   scale(1.05); }
+          75%     { transform:rotate(-4deg); }
+          90%     { transform:rotate(4deg); }
+        }
+        @keyframes popOpen {
+          0%   { transform:scale(1); }
+          40%  { transform:scale(1.4) rotate(15deg); }
+          70%  { transform:scale(0.6) rotate(-5deg); }
+          100% { transform:scale(0) rotate(0deg); opacity:0; }
+        }
+        @keyframes rewardReveal {
+          from { opacity:0; transform:scale(0.9) translateY(12px); }
+          to   { opacity:1; transform:scale(1) translateY(0); }
+        }
+        @keyframes spinRing {
+          from { transform:rotate(0deg); }
+          to   { transform:rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 
